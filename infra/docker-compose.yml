@@ -1,0 +1,148 @@
+name: qa-banca-ai
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: skyvern
+      POSTGRES_PASSWORD: skyvern
+      POSTGRES_DB: skyvern
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skyvern -d skyvern"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  ollama-model:
+    image: ollama/ollama:latest
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        echo "Ensuring model ${OLLAMA_MODEL:-gemma4:e4b} is available..." &&
+        ollama pull "${OLLAMA_MODEL:-gemma4:e4b}"
+
+  skyvern:
+    build:
+      context: ./.runtime/skyvern
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+      - "6080:6080"
+    environment:
+      DATABASE_STRING: postgresql+psycopg://skyvern:skyvern@postgres:5432/skyvern
+
+      ENABLE_OLLAMA: "true"
+      LLM_KEY: OLLAMA
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+      OLLAMA_SERVER_URL: http://ollama:11434
+      OLLAMA_SUPPORTS_VISION: "false"
+
+      BROWSER_TYPE: ${BROWSER_TYPE:-chromium-headful}
+      BROWSER_STREAMING_MODE: ${BROWSER_STREAMING_MODE:-cdp}
+
+      # Keep this narrow. Add only the private hosts used by the lab.
+      ALLOWED_HOSTS: ${SKYVERN_ALLOWED_HOSTS:-["192.168.49.2"]}
+
+      DOWNLOAD_PATH: /data/downloads
+      BROWSER_SESSION_BASE_PATH: /data/browser_sessions
+      CREDENTIAL_VAULT_TYPE: skyvern
+      ENABLE_LOCAL_CREDENTIAL_VAULT: "true"
+      LOCAL_CREDENTIAL_VAULT_PATH: /data/credential_vault
+
+      ENABLE_CODE_BLOCK: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ANALYTICS_ID: ${ANALYTICS_ID:-anonymous}
+
+    volumes:
+      - ./artifacts:/data/artifacts
+      - ./videos:/data/videos
+      - ./har:/data/har
+      - ./log:/data/log
+      - ./downloads:/data/downloads
+      - ./browser_sessions:/data/browser_sessions
+      - ./credential_vault:/data/credential_vault
+      - ./.skyvern:/app/.skyvern
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama-model:
+        condition: service_completed_successfully
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/heartbeat', timeout=5)"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 180s
+
+  # Optional UI. Start it with:
+  #   docker compose --profile ui up -d skyvern-ui
+  skyvern-ui:
+    profiles: ["ui"]
+    build:
+      context: ./.runtime/skyvern
+      dockerfile: Dockerfile.ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ./artifacts:/data/artifacts
+      - ./videos:/data/videos
+      - ./har:/data/har
+      - ./.skyvern:/app/.skyvern
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+      VITE_ARTIFACT_API_BASE_URL: http://localhost:9090
+      VITE_WSS_BASE_URL: ws://localhost:8000/api/v1
+      VITE_BROWSER_STREAMING_MODE: ${BROWSER_STREAMING_MODE:-cdp}
+    depends_on:
+      skyvern:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  ollama-data:

@@ -1,0 +1,24 @@
+# Perfiles lógicos de datos para los escenarios.
+# Este archivo NO contiene secretos. Cada valor sensible referencia una variable
+# del ambiente con env://NOMBRE_VARIABLE.
+#
+# Un smoke elige su perfil en Gherkin:
+#   Dado que uso el perfil de prueba "smoke_login_personal"
+#
+# Así dos smoke tests pueden usar credenciales distintas sin cambiar el código.
+profiles:
+  smoke_login_personal:
+    username: env://SMOKE_LOGIN_PERSONAL_USERNAME
+    password: env://SMOKE_LOGIN_PERSONAL_PASSWORD
+  smoke_login_empresa:
+    username: env://SMOKE_LOGIN_EMPRESA_USERNAME
+    password: env://SMOKE_LOGIN_EMPRESA_PASSWORD  
+
+  # Preparado para el smoke de transferencias cuando se agregue al feature.
+  smoke_transfer_personal:
+    username: env://SMOKE_TRANSFER_PERSONAL_USERNAME
+    password: env://SMOKE_TRANSFER_PERSONAL_PASSWORD
+    otp: env://SMOKE_TRANSFER_PERSONAL_OTP
+    source_account: env://SMOKE_TRANSFER_SOURCE_ACCOUNT
+    destination_account: env://SMOKE_TRANSFER_DESTINATION_ACCOUNT
+    amount: 25000
