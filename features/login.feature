@@ -11,11 +11,11 @@ Característica: Acceso a banca en línea con login de dos pasos
   @smoke
   Escenario: Login exitoso muestra la posición consolidada
     Dado que uso el perfil de prueba "smoke_login_personal"
-    Cuando ingreso el usuario en el campo username
-    Y hago click en el boton continue
+    Cuando ingreso la variable "username" en "campo Username"
+    Y hago click en "botón Continue"
     Entonces hay un campo de texto password para escribir la contraseña
-    Cuando ingreso la contraseña en el campo password
-    Y hago click en el boton Sign in
+    Cuando ingreso la variable "password" en "campo Password"
+    Y hago click en "botón Sign in"
     Entonces se muestra la posicion consolidada con 2 Accounts y 1 CreditCards
-    Cuando hago click en "View summary" de la card "CUENTA PRINCIPAL" terminada en 000001
+    Cuando hago click en "View summary de la card CUENTA PRINCIPAL terminada en 000001"
     Entonces espero a que se muestre la pantalla Product Summary

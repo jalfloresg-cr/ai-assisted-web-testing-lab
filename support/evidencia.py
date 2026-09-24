@@ -5,6 +5,9 @@ Cada corrida de pytest crea  evidencia/<fecha_hora>/  con:
   resumen.json    lo mismo en JSON
   <escenario>/NN_<estado>_<paso>.png   una captura por paso (y en el paso que falla)
 
+Cada paso registra además su "ruta" en el router (deterministico / semantico /
+agentic / sin_regla) y el encabezado resume cuántos pasos hubo de cada tipo.
+
 Las capturas pueden mostrar datos personales o financieros: trátalas como sensibles.
 """
 from __future__ import annotations
@@ -60,6 +63,7 @@ def registrar_paso(
     captura,
     error=None,
     motivo=None,
+    ruta=None,
 ):
     e = _entrada(nodeid)
     e["feature"], e["escenario"] = feature, escenario
@@ -74,6 +78,7 @@ def registrar_paso(
             "captura": captura.relative_to(CORRIDA).as_posix() if captura else None,
             "motivo": motivo,
             "error": error,
+            "ruta": ruta,
         }
     )
 
@@ -98,6 +103,15 @@ def escribir_informe() -> Path | None:
         "base_url": os.getenv("BASE_URL"),
         "generado": datetime.now().isoformat(timespec="seconds"),
     }
+
+    # Resumen de autonomía: cuántos pasos se resolvieron por cada ruta del router.
+    por_tipo: dict[str, int] = {}
+    for e in escenarios:
+        for p in e["pasos"]:
+            tipo = (p.get("ruta") or {}).get("tipo", "sin_ruta")
+            por_tipo[tipo] = por_tipo.get(tipo, 0) + 1
+    meta["rutas"] = por_tipo
+
     (CORRIDA / "resumen.json").write_text(
         json.dumps({**meta, "escenarios": escenarios}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -112,11 +126,18 @@ def escribir_informe() -> Path | None:
         ".passed,.ok{color:#0a7d33}.failed,.error{color:#b00020;font-weight:600}",
         ".motivo{background:#fff4f4;border-left:4px solid #b00020;padding:.7rem 1rem;margin:.6rem 0 1rem}",
         ".detalle{color:#666;font-size:.82rem}",
+        ".agentic,.sin_ruta,.sin_regla{color:#b36b00;font-weight:600}",
+        ".deterministico{color:#0a7d33}.semantico{color:#1a5fb4}",
         "img{max-width:260px;border:1px solid #ccc}h2{margin-bottom:0}small{color:#555}",
         "</style></head><body><h1>Evidencia de pruebas</h1>",
         f"<p>Ambiente: <b>{esc(str(meta['ambiente']))}</b> &middot; URL: {esc(str(meta['base_url']))}"
         f" &middot; Generado: {esc(meta['generado'])}<br>"
-        f"Escenarios: {len(escenarios)} &middot; Aprobados: {ok} &middot; Fallidos: {len(escenarios) - ok}</p>",
+        f"Escenarios: {len(escenarios)} &middot; Aprobados: {ok} &middot; Fallidos: {len(escenarios) - ok}<br>"
+        "Rutas: "
+        + (" &middot; ".join(
+            f"<span class='{esc(k)}'>{esc(k)}</span>: <b>{v}</b>" for k, v in sorted(por_tipo.items())
+        ) or "&mdash;")
+        + "</p>",
     ]
     for e in escenarios:
         clase = e["estado"] if e["estado"] in _ETIQUETA else ""
@@ -136,7 +157,7 @@ def escribir_informe() -> Path | None:
                 + "</div>"
             )
         partes.append(
-            "<table><tr><th>#</th><th>Paso</th><th>Estado</th><th>Seg.</th><th>Captura</th></tr>"
+            "<table><tr><th>#</th><th>Paso</th><th>Estado</th><th>Ruta</th><th>Seg.</th><th>Captura</th></tr>"
         )
         for p in e["pasos"]:
             img = (
@@ -154,9 +175,15 @@ def escribir_informe() -> Path | None:
                 if p.get("error")
                 else ""
             )
+            ruta = p.get("ruta") or {}
+            celda_ruta = (
+                f"<td class='{esc(ruta.get('tipo', 'sin_ruta'), quote=True)}'>"
+                f"{esc(ruta.get('tipo', '—'))}<br><small>{esc(ruta.get('regla', ''))}</small></td>"
+            )
             partes.append(
                 f"<tr><td>{p['n']}</td><td>{esc(p['paso'])}{motivo}{detalle}</td>"
-                f"<td class='{p['estado']}'>{esc(p['estado'])}</td><td>{p['segundos']}</td><td>{img}</td></tr>"
+                f"<td class='{p['estado']}'>{esc(p['estado'])}</td>{celda_ruta}"
+                f"<td>{p['segundos']}</td><td>{img}</td></tr>"
             )
         partes.append("</table>")
     partes.append("</body></html>")

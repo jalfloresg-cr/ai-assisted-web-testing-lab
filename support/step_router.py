@@ -9,7 +9,10 @@ El router conoce operaciones:
 - extract
 - validate
 - operaciones con variables
-- act como fallback
+- act como fallback (bloqueable con ROUTER_STRICT=true)
+
+Cada step registra en ``ultima_ruta`` cómo se resolvió
+(deterministico / semantico / agentic / sin_regla) para la evidencia.
 
 No conoce conceptos específicos de una aplicación como:
 
@@ -34,6 +37,14 @@ from .variables import (
     iguales,
     numero,
 )
+
+
+class StepNoReconocido(AssertionError):
+    """El step no coincide con ninguna regla del router y el modo estricto está activo."""
+
+
+def _modo_estricto() -> bool:
+    return os.getenv("ROUTER_STRICT", "false").strip().lower() in {"1", "true", "si", "sí"}
 
 
 # ================================================================
@@ -240,6 +251,9 @@ class StepRouter:
             sesion
         )
 
+        # Cómo se resolvió el último step. Lo lee conftest para la evidencia.
+        self.ultima_ruta: dict | None = None
+
     @property
     def page(self):
         return self.sesion.page
@@ -265,6 +279,47 @@ class StepRouter:
         return self.datos.valor(nombre)
 
     # ============================================================
+    # TRAZABILIDAD
+    # ============================================================
+
+    def _ruta(
+        self,
+        tipo: str,
+        regla: str,
+    ) -> None:
+        """
+        Registra cómo se resolvió el step:
+
+        deterministico | semantico | agentic | sin_regla
+        """
+
+        self.ultima_ruta = {
+            "tipo": tipo,
+            "regla": regla,
+        }
+
+    def _fallback_act(
+        self,
+        texto: str,
+    ) -> None:
+
+        if _modo_estricto():
+
+            self._ruta("sin_regla", "bloqueado")
+
+            raise StepNoReconocido(
+                f'El step "{texto}" no coincide con ninguna regla del router '
+                "(ROUTER_STRICT=true). Reescríbelo con el vocabulario soportado "
+                "o desactiva el modo estricto para exploración."
+            )
+
+        self._ruta("agentic", "act")
+
+        self.sesion.run(
+            self.page.act(texto)
+        )
+
+    # ============================================================
     # GIVEN
     # ============================================================
 
@@ -273,7 +328,11 @@ class StepRouter:
         texto: str,
     ) -> None:
 
+        self.ultima_ruta = None
+
         if match := RE_PERFIL.fullmatch(texto):
+
+            self._ruta("deterministico", "perfil")
 
             self.datos.usar(
                 match["perfil"]
@@ -283,6 +342,8 @@ class StepRouter:
 
         if RE_NAVEGAR.search(texto):
 
+            self._ruta("deterministico", "goto")
+
             self.sesion.run(
                 self.page.goto(
                     os.environ["BASE_URL"]
@@ -291,10 +352,8 @@ class StepRouter:
 
             return
 
-        # Fallback agentic
-        self.sesion.run(
-            self.page.act(texto)
-        )
+        # Fallback agentic (bloqueado si ROUTER_STRICT=true)
+        self._fallback_act(texto)
 
     # ============================================================
     # WHEN
@@ -305,11 +364,15 @@ class StepRouter:
         texto: str,
     ) -> None:
 
+        self.ultima_ruta = None
+
         # --------------------------------------------------------
         # FILL POR ID
         # --------------------------------------------------------
 
         if match := RE_FILL_VARIABLE_ID.fullmatch(texto):
+
+            self._ruta("deterministico", "fill_id")
 
             variable = match["variable"]
             element_id = match["id"]
@@ -333,6 +396,8 @@ class StepRouter:
 
         if match := RE_FILL_VARIABLE_SELECTOR.fullmatch(texto):
 
+            self._ruta("deterministico", "fill_selector")
+
             variable = match["variable"]
             selector = match["selector"]
 
@@ -354,6 +419,8 @@ class StepRouter:
         # --------------------------------------------------------
 
         if match := RE_FILL_VARIABLE.fullmatch(texto):
+
+            self._ruta("semantico", "fill")
 
             variable = match["variable"]
             objetivo = match["objetivo"]
@@ -377,6 +444,8 @@ class StepRouter:
 
         if match := RE_FILL_LITERAL.fullmatch(texto):
 
+            self._ruta("semantico", "fill_literal")
+
             valor = match["valor"]
             objetivo = match["objetivo"]
 
@@ -395,6 +464,8 @@ class StepRouter:
 
         if match := RE_CLICK_ID.fullmatch(texto):
 
+            self._ruta("deterministico", "click_id")
+
             self.sesion.run(
                 self.page.click(
                     f'#{match["id"]}'
@@ -409,6 +480,8 @@ class StepRouter:
 
         if match := RE_CLICK_SELECTOR.fullmatch(texto):
 
+            self._ruta("deterministico", "click_selector")
+
             self.sesion.run(
                 self.page.click(
                     match["selector"]
@@ -422,6 +495,8 @@ class StepRouter:
         # --------------------------------------------------------
 
         if match := RE_CLICK_SEMANTICO.fullmatch(texto):
+
+            self._ruta("semantico", "click")
 
             objetivo = match["objetivo"]
 
@@ -438,6 +513,8 @@ class StepRouter:
         # --------------------------------------------------------
 
         if match := RE_GUARDAR_VALOR.fullmatch(texto):
+
+            self._ruta("semantico", "extract")
 
             objetivo = match["objetivo"]
             variable = match["variable"]
@@ -458,12 +535,10 @@ class StepRouter:
             return
 
         # --------------------------------------------------------
-        # FALLBACK AGENTIC
+        # FALLBACK AGENTIC (bloqueado si ROUTER_STRICT=true)
         # --------------------------------------------------------
 
-        self.sesion.run(
-            self.page.act(texto)
-        )
+        self._fallback_act(texto)
 
     # ============================================================
     # THEN
@@ -474,11 +549,15 @@ class StepRouter:
         texto: str,
     ) -> None:
 
+        self.ultima_ruta = None
+
         # --------------------------------------------------------
         # A == B
         # --------------------------------------------------------
 
         if match := RE_IGUAL_VARIABLE.fullmatch(texto):
+
+            self._ruta("deterministico", "assert_igual_variable")
 
             izquierda = self._valor(
                 match["izquierda"]
@@ -506,6 +585,8 @@ class StepRouter:
 
         if match := RE_IGUAL_LITERAL.fullmatch(texto):
 
+            self._ruta("deterministico", "assert_igual_literal")
+
             actual = self._valor(
                 match["variable"]
             )
@@ -528,6 +609,8 @@ class StepRouter:
         # --------------------------------------------------------
 
         if match := RE_RESTA.fullmatch(texto):
+
+            self._ruta("deterministico", "assert_resta")
 
             actual = numero(
                 self._valor(
@@ -564,6 +647,8 @@ class StepRouter:
 
         if match := RE_SUMA.fullmatch(texto):
 
+            self._ruta("deterministico", "assert_suma")
+
             actual = numero(
                 self._valor(
                     match["resultado"]
@@ -599,6 +684,8 @@ class StepRouter:
 
         if match := RE_MAYOR.fullmatch(texto):
 
+            self._ruta("deterministico", "assert_mayor")
+
             izquierda = numero(
                 self._valor(
                     match["izquierda"]
@@ -625,6 +712,8 @@ class StepRouter:
 
         if match := RE_MENOR.fullmatch(texto):
 
+            self._ruta("deterministico", "assert_menor")
+
             izquierda = numero(
                 self._valor(
                     match["izquierda"]
@@ -648,6 +737,8 @@ class StepRouter:
         # --------------------------------------------------------
         # VALIDACIÓN SEMÁNTICA / VISUAL
         # --------------------------------------------------------
+
+        self._ruta("semantico", "validate")
 
         ok = self.sesion.run(
             self.page.validate(

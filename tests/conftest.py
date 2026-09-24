@@ -16,7 +16,7 @@ from pytest_bdd import given, parsers, then, when
 from support import evidencia
 from support.browser import Sesion
 from support.datos import DatosPrueba
-from support.step_router import StepRouter
+from support.step_router import StepNoReconocido, StepRouter
 from support.variables import VariablesEscenario
 
 # El smoke principal apunta al ambiente QA/Minikube. Puede cambiarse con TEST_ENV.
@@ -105,6 +105,14 @@ def pytest_bdd_before_step_call(request, feature, scenario, step, step_func, ste
     request.node._t_paso = time.perf_counter()
 
 
+def _ruta_actual(request):
+    """Ruta (deterministico/semantico/agentic/sin_regla) del último step del router."""
+    try:
+        return request.getfixturevalue("router").ultima_ruta
+    except Exception:
+        return None
+
+
 def _cerrar_paso(request, feature, scenario, step, estado, error=None, motivo=None):
     dt = time.perf_counter() - getattr(request.node, "_t_paso", time.perf_counter())
     captura = None
@@ -115,6 +123,7 @@ def _cerrar_paso(request, feature, scenario, step, estado, error=None, motivo=No
             captura = ruta
     except Exception:
         pass
+    ruta = _ruta_actual(request)
     evidencia.registrar_paso(
         request.node.nodeid,
         feature.name,
@@ -126,8 +135,13 @@ def _cerrar_paso(request, feature, scenario, step, estado, error=None, motivo=No
         captura,
         error,
         motivo,
+        ruta,
     )
-    print(f"  [{dt:6.1f}s] {'ok ' if estado == 'ok' else 'ERR'} {step.keyword} {step.name}")
+    etiqueta = f"[{ruta['tipo']}]" if ruta else ""
+    print(
+        f"  [{dt:6.1f}s] {'ok ' if estado == 'ok' else 'ERR'} "
+        f"{etiqueta:<16} {step.keyword} {step.name}"
+    )
     if estado == "error" and motivo:
         print(f"           Motivo: {motivo}")
 
@@ -140,6 +154,13 @@ def pytest_bdd_step_error(request, feature, scenario, step, step_func, step_func
     # pytest seguirá ejecutando los escenarios siguientes por defecto. Aquí no
     # interceptamos ni silenciamos la excepción: únicamente enriquecemos la
     # evidencia con una razón funcional y conservamos el detalle técnico.
+    # Si el step no tiene regla (modo estricto), el mensaje de la excepción ya es
+    # el motivo correcto; _motivo_fallo diría "elemento no disponible", que es falso.
+    motivo = (
+        str(exception)
+        if isinstance(exception, StepNoReconocido)
+        else _motivo_fallo(step)
+    )
     _cerrar_paso(
         request,
         feature,
@@ -147,7 +168,7 @@ def pytest_bdd_step_error(request, feature, scenario, step, step_func, step_func
         step,
         "error",
         f"{type(exception).__name__}: {exception}"[:1000],
-        _motivo_fallo(step),
+        motivo,
     )
 
 
