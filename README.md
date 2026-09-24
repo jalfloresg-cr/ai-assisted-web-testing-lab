@@ -125,6 +125,30 @@ Luego cualquier step puede usar sus claves como variables: `ingreso la variable 
 - **El `que` inicial es opcional:** `Dado que hago click en ...` y `Cuando hago click en ...` se resuelven igual.
 - **Cada step se resuelve de forma independiente.** Un mismo escenario puede mezclar estilos.
 
+### Uso de comillas (obligatorio)
+
+Todo valor que el router debe extraer de la frase va entre **comillas dobles**. La regla simple: **lo que va entre comillas es un dato; lo que va fuera es la operación**.
+
+| Qué va entre comillas | Ejemplo |
+|---|---|
+| Selector o id | `hago click en el selector "#BotonNuevo"` |
+| Descripción para el LLM | `hago click en "botón continuar"` |
+| Nombre de variable | `ingreso la variable "username" en ...` |
+| Valor literal | `ingreso el valor "25000" en ...` |
+| Nombre de perfil | `que uso el perfil de prueba "smoke_login_personal"` |
+| Ruta | `que navego a la ruta "/transfers"` |
+| Texto esperado | `el selector "#titulo" contiene el texto "Product Summary"` |
+
+Sin comillas el step no coincide con ninguna regla:
+
+| Escrito así | Resultado |
+|---|---|
+| `hago click en el selector #BotonNuevo` | Con `ROUTER_STRICT=true` falla como `sin_regla`; sin modo estricto se delega al **agente** (`act`) |
+| `hago click en el selector "#BotonNuevo"` | Click determinístico, sin LLM |
+
+- Dentro de las comillas dobles no puede haber otras comillas dobles. En selectores con atributos usa comillas simples: `"[data-testid='sign-in']"`.
+- **Excepción:** los `Entonces` en texto libre no llevan comillas, porque la frase completa es la condición que evalúa el LLM: `Entonces se muestra la posicion consolidada`.
+
 ### Tres estilos
 
 | Estilo | Cómo se escribe | LLM | Cuándo usarlo |
@@ -174,6 +198,27 @@ La navegación exige la **frase completa**. `Dado que abro el menú de transfere
 
 `clic` y `click` se aceptan por igual. Las variables se buscan primero entre las generadas en el escenario y luego en el perfil activo.
 
+### Vocabulario: interacciones de formulario (`Dado` / `Cuando`)
+
+Todas son determinísticas (sin LLM), aceptan las tres formas de indicar el elemento (`el selector`, `el elemento con selector`, `el elemento con id`) y esperan hasta `SELECTOR_TIMEOUT_MS`.
+
+| Gherkin | Para qué |
+|---|---|
+| `selecciono la opción "Cuenta 000002" en el selector "#cuenta-origen"` | Lista desplegable `<select>`, por texto visible o por `value` |
+| `selecciono la opción de la variable "source_account" en el selector "#cuenta-origen"` | Lo mismo, con el valor del perfil o de una variable |
+| `marco el selector "#acepto-terminos"` / `desmarco el selector "..."` | Checkboxes y radios. Si ya está en el estado pedido, no hace nada |
+| `presiono la tecla "Enter" en el selector "#buscar"` | Tecla sobre un elemento |
+| `presiono la tecla "Enter"` | Tecla sobre el elemento que tenga el foco |
+| `limpio el selector "#monto"` | Vacía un campo |
+| `paso el mouse sobre el selector "#menu-productos"` | Menús que se despliegan con hover |
+| `adjunto el archivo "data/archivos/comprobante.pdf" en el selector "#archivo"` | Carga de archivos |
+| `hago scroll hasta el selector "#footer"` | Lleva el elemento a la vista (contenido que carga al hacer scroll) |
+
+- **Listas:** `selecciono la opción` solo funciona con `<select>` nativos. Espera a que la opción exista, porque muchas listas se cargan desde una API. Las listas construidas con `div` (React Select, Material, etc.) se manejan con dos clicks: uno para abrirla y otro sobre la opción. Si la opción no existe, el error muestra las opciones disponibles.
+- **Teclas:** se aceptan los nombres de Playwright (`Enter`, `Tab`, `Escape`, `ArrowDown`, `Control+A`, `F5`...) y alias en español: `intro`, `tabulador`, `esc`, `espacio`, `retroceso`, `suprimir`, `flecha abajo`, `flecha arriba`, `flecha izquierda`, `flecha derecha`.
+- **Radios:** un radio no se puede desmarcar directamente; se marca otra opción del grupo.
+- **Archivos:** la ruta es relativa a la raíz del proyecto y el archivo debe existir. Se rechazan las rutas absolutas. Se recomienda guardarlos en `data/archivos/`, sin datos reales de clientes.
+
 En el estilo semántico, lo que va entre comillas es una **descripción para el LLM**. Hazla descriptiva por sí misma: "botón Sign in" funciona mejor que "Sign in", y un texto como "btn1" no sirve. No pongas un selector CSS en una descripción: `hago click en "#menu"` se enviaría al LLM como texto.
 
 ### Vocabulario: extracción de datos
@@ -191,7 +236,13 @@ Para montos y datos críticos se recomienda la forma por selector: es exacta e i
 |---|---|
 | `el selector "#x" está visible` | Espera hasta `SELECTOR_TIMEOUT_MS` a que aparezca |
 | `el selector "#x" no está visible` | Espera a que desaparezca o no exista |
-| `el selector "#x" contiene el texto "Product Summary"` | Reintenta hasta que el texto coincida. Distingue mayúsculas; normaliza espacios y saltos de línea |
+| `el selector "#x" contiene el texto "Product Summary"` | Reintenta hasta que el texto **contenga** el esperado. Distingue mayúsculas; normaliza espacios y saltos de línea |
+| `el selector "#x" tiene el texto "Product Summary"` | Igual, pero el texto debe ser **exacto** |
+| `el selector "#monto" tiene el valor "25000"` | Valor de un **campo de formulario** (`input`, `textarea`, `select`) |
+| `el selector ".card-cuenta" tiene 2 elementos` | Cantidad de elementos que coinciden con el selector (`tiene 1 elemento` en singular) |
+| `la URL contiene "/dashboard"` | URL actual de la página |
+| `el selector "#btn-transferir" está habilitado` / `está deshabilitado` | Estado de botones y campos |
+| `el selector "#acepto-terminos" está marcado` / `no está marcado` | Estado de checkboxes y radios |
 | `la variable "a" debe ser igual a la variable "b"` | Assert en Python |
 | `la variable "a" debe ser igual a "1000000"` | Assert en Python (compara como número si ambos lo son) |
 | `la variable "final" debe ser igual a la variable "inicial" menos la variable "amount"` | Aritmética con `Decimal` en Python |
@@ -199,14 +250,18 @@ Para montos y datos críticos se recomienda la forma por selector: es exacta e i
 | `la variable "a" debe ser mayor que la variable "b"` / `menor que` | Ídem |
 | **Cualquier otro texto** | `page.validate()`: el LLM juzga si la condición se cumple |
 
+Todas las validaciones por selector reintentan cada 250 ms hasta `SELECTOR_TIMEOUT_MS`, así que toleran pantallas que tardan en actualizarse. Si fallan, el mensaje incluye el valor encontrado.
+
+`contiene el texto` y `tiene el texto` **no funcionan con campos de formulario**: lo escrito en un `input` no es texto visible para el navegador. Para campos usa `tiene el valor`.
+
 La IA nunca hace la aritmética: extrae los valores y Python calcula y compara.
 
 ### Cuándo interviene el LLM
 
 | Situación | ¿LLM? |
 |---|---|
-| Step por selector o id (click, fill, texto, visible, contiene) | **No** |
-| Perfil, navegación, atrás, recargar, asserts de variables | **No** |
+| Cualquier step por selector o id (acciones, interacciones, extracción de texto, validaciones) | **No** |
+| Perfil, navegación, atrás, recargar, teclas, URL, asserts de variables | **No** |
 | Step semántico (descripción entre comillas) | Sí, para localizar el elemento |
 | `guardo el valor de "..."` | Sí, para interpretar y extraer |
 | `Entonces` en texto libre | Sí, para juzgar la condición |
@@ -239,6 +294,8 @@ Característica: Login de banca personal
     Y hago click en el selector "[data-testid='sign-in']"
     Entonces el selector "#posicion-consolidada" está visible
     Y el selector "#error-login" no está visible
+    Y la URL contiene "/dashboard"
+    Y el selector ".card-cuenta" tiene 2 elementos
 ```
 
 ### Ejemplo: estilo semántico
@@ -253,6 +310,23 @@ Característica: Login de banca personal
     Cuando ingreso la variable "password" en "campo Password"
     Y hago click en "botón Sign in"
     Entonces se muestra la posicion consolidada con 2 Accounts y 1 CreditCards
+```
+
+### Ejemplo: formulario completo por selector
+
+```gherkin
+  Escenario: El botón Transferir se habilita solo con el formulario completo
+    Dado que uso el perfil de prueba "smoke_transfer_personal"
+    Y que navego a la ruta "/transfers"
+    Entonces el selector "#btn-transferir" está deshabilitado
+    Cuando selecciono la opción de la variable "source_account" en el selector "#cuenta-origen"
+    Y ingreso la variable "amount" en el selector "#monto"
+    Y marco el selector "#acepto-terminos"
+    Entonces el selector "#monto" tiene el valor "25000"
+    Y el selector "#acepto-terminos" está marcado
+    Y el selector "#btn-transferir" está habilitado
+    Cuando limpio el selector "#monto"
+    Entonces el selector "#btn-transferir" está deshabilitado
 ```
 
 ### Ejemplo: estilo mixto con validación de negocio

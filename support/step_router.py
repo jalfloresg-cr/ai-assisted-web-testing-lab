@@ -6,8 +6,10 @@ El router conoce operaciones:
 - navegar (abrir la aplicación, ir a una ruta, atrás, recargar)
 - fill      (determinístico por selector/id, o semántico)
 - click     (determinístico por selector/id, o semántico)
+- select, check, teclas, limpiar, hover, adjuntar, scroll (determinísticos)
 - extract   (texto por selector/id sin LLM, o semántico)
-- validate  (visible / no visible / contiene texto por selector, o semántico)
+- validate  (visible, texto, valor, cantidad, URL, habilitado, marcado
+             por selector; o semántico)
 - operaciones con variables
 - act como fallback (bloqueable con ROUTER_STRICT=true)
 
@@ -35,6 +37,7 @@ import asyncio
 import os
 import re
 import time
+from pathlib import Path
 
 from .datos import DatosPrueba
 from .variables import (
@@ -111,6 +114,49 @@ def _timeout_ms() -> int:
 def _normalizar_texto(texto: str) -> str:
     """Colapsa espacios y saltos de línea: "Product\n  Summary" -> "Product Summary"."""
     return " ".join(str(texto).split())
+
+
+# Nombres de teclas en español -> nombres de Playwright. Cualquier otro nombre
+# (ArrowDown, Control+A, F5...) se envía tal cual.
+_TECLAS = {
+    "enter": "Enter",
+    "intro": "Enter",
+    "tab": "Tab",
+    "tabulador": "Tab",
+    "escape": "Escape",
+    "esc": "Escape",
+    "espacio": "Space",
+    "retroceso": "Backspace",
+    "suprimir": "Delete",
+    "flecha abajo": "ArrowDown",
+    "flecha arriba": "ArrowUp",
+    "flecha izquierda": "ArrowLeft",
+    "flecha derecha": "ArrowRight",
+}
+
+
+def _tecla(nombre: str) -> str:
+    return _TECLAS.get(nombre.strip().lower(), nombre.strip())
+
+
+def _primera_linea(exc: Exception) -> str:
+    """Los errores de Playwright traen un log de varias líneas; basta la primera."""
+    return (str(exc).strip().splitlines() or [type(exc).__name__])[0][:300]
+
+
+def _archivo_adjunto(ruta: str) -> str:
+    """Ruta relativa a la raíz del proyecto, que debe existir."""
+    archivo = Path(ruta)
+    if archivo.is_absolute():
+        raise AssertionError(
+            f'La ruta "{ruta}" debe ser relativa a la raíz del proyecto '
+            '(ej. "data/archivos/comprobante.pdf").'
+        )
+    if not archivo.is_file():
+        raise AssertionError(
+            f'No existe el archivo a adjuntar "{ruta}" (relativo a {Path.cwd()}).'
+        )
+    return str(archivo.resolve())
 
 
 def _url_ruta(base: str, ruta: str) -> str:
@@ -217,6 +263,74 @@ RE_CLICK_SEMANTICO = re.compile(
 
 
 # ================================================================
+# INTERACCIONES (determinísticas)
+# ================================================================
+
+# selecciono la opción "Cuenta 000002" en el selector "#cuenta-origen"
+#
+RE_SELECCIONAR_DET = re.compile(
+    rf'selecciono la opci[oó]n "(?P<opcion>[^"]+)" en (?:{_DET})',
+    re.I,
+)
+
+# selecciono la opción de la variable "source_account" en el selector "#cuenta-origen"
+#
+RE_SELECCIONAR_VAR_DET = re.compile(
+    rf'selecciono la opci[oó]n de la variable "(?P<variable>[^"]+)" en (?:{_DET})',
+    re.I,
+)
+
+# marco el selector "#acepto"  /  desmarco el selector "#acepto"
+#
+RE_MARCAR_DET = re.compile(
+    rf"(?P<accion>marco|desmarco) (?:{_DET})",
+    re.I,
+)
+
+# presiono la tecla "Enter" en el selector "#buscar"
+#
+RE_TECLA_DET = re.compile(
+    rf'presiono la tecla "(?P<tecla>[^"]+)" en (?:{_DET})',
+    re.I,
+)
+
+# presiono la tecla "Enter"      (sobre el elemento que tenga el foco)
+#
+RE_TECLA = re.compile(
+    r'presiono la tecla "(?P<tecla>[^"]+)"',
+    re.I,
+)
+
+# limpio el selector "#monto"
+#
+RE_LIMPIAR_DET = re.compile(
+    rf"limpio (?:{_DET})",
+    re.I,
+)
+
+# paso el mouse sobre el selector "#menu-productos"
+#
+RE_HOVER_DET = re.compile(
+    rf"paso el mouse sobre (?:{_DET})",
+    re.I,
+)
+
+# adjunto el archivo "data/archivos/comprobante.pdf" en el selector "#archivo"
+#
+RE_ADJUNTAR_DET = re.compile(
+    rf'adjunto el archivo "(?P<archivo>[^"]+)" en (?:{_DET})',
+    re.I,
+)
+
+# hago scroll hasta el selector "#footer"
+#
+RE_SCROLL_DET = re.compile(
+    rf"hago scroll hasta (?:{_DET})",
+    re.I,
+)
+
+
+# ================================================================
 # EXTRACTION
 # ================================================================
 
@@ -262,6 +376,48 @@ RE_NO_VISIBLE_DET = re.compile(
 
 RE_CONTIENE_TEXTO_DET = re.compile(
     rf'(?:{_DET}) contiene el texto "(?P<texto>[^"]*)"',
+    re.I,
+)
+
+# el selector "#titulo" tiene el texto "Product Summary"     (exacto)
+#
+RE_TEXTO_EXACTO_DET = re.compile(
+    rf'(?:{_DET}) tiene el texto "(?P<texto>[^"]*)"',
+    re.I,
+)
+
+# el selector "#monto" tiene el valor "25000"     (campos de formulario)
+#
+RE_VALOR_DET = re.compile(
+    rf'(?:{_DET}) tiene el valor "(?P<valor>[^"]*)"',
+    re.I,
+)
+
+# el selector ".card-cuenta" tiene 2 elementos
+#
+RE_CANTIDAD_DET = re.compile(
+    rf"(?:{_DET}) tiene (?P<cantidad>\d+) elementos?",
+    re.I,
+)
+
+# la URL contiene "/dashboard"
+#
+RE_URL_CONTIENE = re.compile(
+    r'la url contiene "(?P<texto>[^"]+)"',
+    re.I,
+)
+
+# el selector "#btn" está habilitado  /  está deshabilitado
+#
+RE_HABILITADO_DET = re.compile(
+    rf"(?:{_DET}) est[aá] (?P<estado>habilitado|deshabilitado)",
+    re.I,
+)
+
+# el selector "#acepto" está marcado  /  no está marcado
+#
+RE_MARCADO_DET = re.compile(
+    rf"(?:{_DET}) (?P<negacion>no )?est[aá] marcado",
     re.I,
 )
 
@@ -414,36 +570,125 @@ class StepRouter:
             )
         )
 
+    async def _esperar_condicion(
+        self,
+        evaluar,
+        mensaje_fallo: str,
+        etiqueta_actual: str = "Valor actual",
+    ) -> None:
+        """
+        Reintenta evaluar() cada 250 ms hasta SELECTOR_TIMEOUT_MS.
+
+        evaluar: función async que devuelve (cumple: bool, valor_actual).
+        """
+
+        limite = time.monotonic() + _timeout_ms() / 1000
+        actual = None
+
+        while True:
+            try:
+                cumple, actual = await evaluar()
+            except Exception as exc:
+                cumple, actual = False, f"(error: {_primera_linea(exc)})"
+
+            if cumple:
+                return
+
+            if time.monotonic() >= limite:
+                if isinstance(actual, (list, tuple)):
+                    mostrado = ", ".join(f'"{x}"' for x in actual) or "(ninguna)"
+                else:
+                    mostrado = f'"{str(actual)[:200]}"'
+                raise AssertionError(
+                    f"{mensaje_fallo} {etiqueta_actual}: {mostrado}."
+                )
+
+            await asyncio.sleep(0.25)
+
     async def _esperar_texto(
         self,
         selector: str,
         esperado: str,
+        exacto: bool = False,
     ) -> None:
-        """Reintenta hasta que el texto del elemento contenga el esperado."""
+        """Reintenta hasta que el texto del elemento contenga (o sea igual a) el esperado."""
 
         esperado = _normalizar_texto(esperado)
-        limite = time.monotonic() + _timeout_ms() / 1000
-        actual = ""
 
         await self._esperar_estado(selector, "visible")
 
-        while True:
+        async def evaluar():
             actual = _normalizar_texto(
-                await self._localizar(selector).inner_text(
-                    timeout=_timeout_ms()
-                )
+                await self._localizar(selector).inner_text(timeout=_timeout_ms())
             )
+            return (actual == esperado if exacto else esperado in actual), actual
 
-            if esperado in actual:
-                return
+        verbo = "no tiene exactamente el texto" if exacto else "no contiene el texto"
+        await self._esperar_condicion(
+            evaluar,
+            f'El elemento "{selector}" {verbo} "{esperado}".',
+        )
 
-            if time.monotonic() >= limite:
-                raise AssertionError(
-                    f'El elemento "{selector}" no contiene el texto "{esperado}". '
-                    f'Texto actual: "{actual[:200]}".'
-                )
+    async def _ejecutar(
+        self,
+        descripcion: str,
+        selector: str | None,
+        coro,
+    ) -> None:
+        """Ejecuta una acción de Playwright y traduce su error a un mensaje legible."""
 
-            await asyncio.sleep(0.25)
+        try:
+            await coro
+        except AssertionError:
+            raise
+        except Exception as exc:
+            donde = f' (selector "{selector}")' if selector else ""
+            raise AssertionError(
+                f"No fue posible {descripcion}{donde}: {_primera_linea(exc)}"
+            ) from exc
+
+    async def _seleccionar_opcion(
+        self,
+        selector: str,
+        deseada: str,
+    ) -> None:
+        """
+        Selecciona en un <select> la opción cuyo texto visible (o value) coincide.
+
+        Espera a que la opción exista: las listas suelen cargarse desde una API.
+        """
+
+        deseada_norm = _normalizar_texto(deseada)
+        elegida: dict = {}
+
+        await self._esperar_estado(selector, "visible")
+
+        async def evaluar():
+            opciones = await self._localizar(selector).evaluate(
+                "el => Array.from(el.options || []).map(o => [o.label, o.value])"
+            )
+            for etiqueta, valor in opciones:
+                if _normalizar_texto(etiqueta) == deseada_norm or valor == deseada:
+                    elegida["value"] = valor
+                    return True, None
+            return False, [etiqueta for etiqueta, _ in opciones]
+
+        await self._esperar_condicion(
+            evaluar,
+            f'El elemento "{selector}" no tiene la opción "{deseada}". '
+            "Revisa que sea un <select> nativo; las listas hechas con div se "
+            "manejan con dos clicks.",
+            etiqueta_actual="Opciones disponibles",
+        )
+
+        await self._ejecutar(
+            f'seleccionar la opción "{deseada}"',
+            selector,
+            self._localizar(selector).select_option(
+                value=elegida["value"],
+                timeout=_timeout_ms(),
+            ),
+        )
 
     # ============================================================
     # VARIABLE RESOLUTION
@@ -746,6 +991,153 @@ class StepRouter:
             return
 
         # --------------------------------------------------------
+        # INTERACCIONES DETERMINÍSTICAS
+        # --------------------------------------------------------
+
+        if match := RE_SELECCIONAR_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"select_{tipo}")
+
+            self.sesion.run(
+                self._seleccionar_opcion(selector, match["opcion"])
+            )
+
+            return
+
+        if match := RE_SELECCIONAR_VAR_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"select_variable_{tipo}")
+
+            self.sesion.run(
+                self._seleccionar_opcion(
+                    selector,
+                    str(self._valor(match["variable"])),
+                )
+            )
+
+            return
+
+        if match := RE_MARCAR_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            marcar = match["accion"].lower() == "marco"
+            self._ruta("deterministico", f"{'check' if marcar else 'uncheck'}_{tipo}")
+
+            elemento = self._localizar(selector)
+            self.sesion.run(
+                self._ejecutar(
+                    "marcar" if marcar else "desmarcar",
+                    selector,
+                    (elemento.check if marcar else elemento.uncheck)(
+                        timeout=_timeout_ms()
+                    ),
+                )
+            )
+
+            return
+
+        if match := RE_TECLA_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"tecla_{tipo}")
+
+            self.sesion.run(
+                self._ejecutar(
+                    f'presionar la tecla "{match["tecla"]}"',
+                    selector,
+                    self._localizar(selector).press(
+                        _tecla(match["tecla"]),
+                        timeout=_timeout_ms(),
+                    ),
+                )
+            )
+
+            return
+
+        if match := RE_TECLA.fullmatch(accion):
+
+            self._ruta("deterministico", "tecla")
+
+            self.sesion.run(
+                self._ejecutar(
+                    f'presionar la tecla "{match["tecla"]}"',
+                    None,
+                    self._pw.keyboard.press(_tecla(match["tecla"])),
+                )
+            )
+
+            return
+
+        if match := RE_LIMPIAR_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"limpiar_{tipo}")
+
+            self.sesion.run(
+                self._ejecutar(
+                    "limpiar el campo",
+                    selector,
+                    self._localizar(selector).fill("", timeout=_timeout_ms()),
+                )
+            )
+
+            return
+
+        if match := RE_HOVER_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"hover_{tipo}")
+
+            self.sesion.run(
+                self._ejecutar(
+                    "pasar el mouse",
+                    selector,
+                    self._localizar(selector).hover(timeout=_timeout_ms()),
+                )
+            )
+
+            return
+
+        if match := RE_ADJUNTAR_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"adjuntar_{tipo}")
+
+            archivo = _archivo_adjunto(match["archivo"])
+
+            self.sesion.run(
+                self._ejecutar(
+                    f'adjuntar "{match["archivo"]}"',
+                    selector,
+                    self._localizar(selector).set_input_files(
+                        archivo,
+                        timeout=_timeout_ms(),
+                    ),
+                )
+            )
+
+            return
+
+        if match := RE_SCROLL_DET.fullmatch(accion):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"scroll_{tipo}")
+
+            self.sesion.run(
+                self._ejecutar(
+                    "hacer scroll",
+                    selector,
+                    self._localizar(selector).scroll_into_view_if_needed(
+                        timeout=_timeout_ms()
+                    ),
+                )
+            )
+
+            return
+
+        # --------------------------------------------------------
         # EXTRAER TEXTO DETERMINÍSTICO + GUARDAR
         # --------------------------------------------------------
 
@@ -1036,6 +1428,137 @@ class StepRouter:
 
             self.sesion.run(
                 self._esperar_texto(selector, match["texto"])
+            )
+
+            return
+
+        # --------------------------------------------------------
+        # ELEMENTO: TEXTO EXACTO
+        # --------------------------------------------------------
+
+        if match := RE_TEXTO_EXACTO_DET.fullmatch(texto):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"texto_exacto_{tipo}")
+
+            self.sesion.run(
+                self._esperar_texto(selector, match["texto"], exacto=True)
+            )
+
+            return
+
+        # --------------------------------------------------------
+        # ELEMENTO: VALOR DE CAMPO
+        # --------------------------------------------------------
+
+        if match := RE_VALOR_DET.fullmatch(texto):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"valor_{tipo}")
+            esperado = match["valor"].strip()
+
+            async def evaluar_valor():
+                actual = (
+                    await self._localizar(selector).input_value(timeout=_timeout_ms())
+                ).strip()
+                return actual == esperado, actual
+
+            self.sesion.run(
+                self._esperar_condicion(
+                    evaluar_valor,
+                    f'El campo "{selector}" no tiene el valor "{esperado}".',
+                )
+            )
+
+            return
+
+        # --------------------------------------------------------
+        # ELEMENTO: CANTIDAD
+        # --------------------------------------------------------
+
+        if match := RE_CANTIDAD_DET.fullmatch(texto):
+
+            selector, tipo = self._selector(match)
+            self._ruta("deterministico", f"cantidad_{tipo}")
+            esperada = int(match["cantidad"])
+
+            async def evaluar_cantidad():
+                actual = await self._pw.locator(selector).count()
+                return actual == esperada, actual
+
+            self.sesion.run(
+                self._esperar_condicion(
+                    evaluar_cantidad,
+                    f'El selector "{selector}" no tiene {esperada} elemento(s).',
+                )
+            )
+
+            return
+
+        # --------------------------------------------------------
+        # URL
+        # --------------------------------------------------------
+
+        if match := RE_URL_CONTIENE.fullmatch(texto):
+
+            self._ruta("deterministico", "url")
+            esperado = match["texto"]
+
+            async def evaluar_url():
+                return esperado in self._pw.url, self._pw.url
+
+            self.sesion.run(
+                self._esperar_condicion(
+                    evaluar_url,
+                    f'La URL no contiene "{esperado}".',
+                )
+            )
+
+            return
+
+        # --------------------------------------------------------
+        # ELEMENTO: HABILITADO / DESHABILITADO
+        # --------------------------------------------------------
+
+        if match := RE_HABILITADO_DET.fullmatch(texto):
+
+            selector, tipo = self._selector(match)
+            habilitado = match["estado"].lower() == "habilitado"
+            self._ruta("deterministico", f"{match['estado'].lower()}_{tipo}")
+
+            async def evaluar_habilitado():
+                actual = await self._localizar(selector).is_enabled(timeout=_timeout_ms())
+                return actual == habilitado, "habilitado" if actual else "deshabilitado"
+
+            self.sesion.run(
+                self._esperar_condicion(
+                    evaluar_habilitado,
+                    f'El elemento "{selector}" no está {match["estado"].lower()}.',
+                )
+            )
+
+            return
+
+        # --------------------------------------------------------
+        # ELEMENTO: MARCADO / NO MARCADO
+        # --------------------------------------------------------
+
+        if match := RE_MARCADO_DET.fullmatch(texto):
+
+            selector, tipo = self._selector(match)
+            marcado = not match["negacion"]
+            self._ruta("deterministico", f"{'marcado' if marcado else 'no_marcado'}_{tipo}")
+
+            async def evaluar_marcado():
+                actual = await self._localizar(selector).is_checked(timeout=_timeout_ms())
+                return actual == marcado, "marcado" if actual else "no marcado"
+
+            self.sesion.run(
+                self._esperar_condicion(
+                    evaluar_marcado,
+                    f'El elemento "{selector}" '
+                    f'{"no está marcado" if marcado else "está marcado"}.',
+                )
             )
 
             return
