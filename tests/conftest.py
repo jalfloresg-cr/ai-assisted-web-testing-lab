@@ -118,9 +118,11 @@ def _cerrar_paso(request, feature, scenario, step, estado, error=None, motivo=No
     captura = None
     try:
         sesion = request.getfixturevalue("sesion")
-        ruta = evidencia.ruta_captura(request.node.nodeid, scenario.name, estado, step.name)
-        if sesion.capturar(ruta):
-            captura = ruta
+        destino = evidencia.ruta_captura(
+            request.node.nodeid, feature.rel_filename, scenario.name, estado, step.name
+        )
+        if sesion.capturar(destino):
+            captura = destino
     except Exception:
         pass
     ruta = _ruta_actual(request)
@@ -136,6 +138,7 @@ def _cerrar_paso(request, feature, scenario, step, estado, error=None, motivo=No
         error,
         motivo,
         ruta,
+        feature.rel_filename,
     )
     etiqueta = f"[{ruta['tipo']}]" if ruta else ""
     print(

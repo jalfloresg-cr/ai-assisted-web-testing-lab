@@ -2,18 +2,18 @@
 
 Automatización QA para una banca demo desplegada en Minikube usando **Gherkin en español + pytest-bdd + Skyvern + Ollama**.
 
-El objetivo del proyecto no es delegar todo el escenario a un agente. El framework interpreta operaciones conocidas y decide qué primitiva utilizar (`goto`, `fill`, `click`, `extract`, `validate`). Skyvern y el LLM se utilizan donde aportan valor: localizar elementos, interpretar estado visible y extraer información de la UI. `page.act()` queda como fallback para acciones no modeladas.
+El objetivo del proyecto no es delegar todo el escenario a un agente. El framework interpreta operaciones conocidas y decide qué primitiva utilizar. Cada step puede resolverse de forma **determinística** (selector CSS o id, sin LLM) o **semántica** (una descripción en lenguaje natural que Skyvern interpreta con el LLM). `page.act()` queda como fallback para acciones no modeladas y puede bloquearse con `ROUTER_STRICT=true`.
 
 ## Qué demuestra el lab
 
 - Escenarios funcionales escritos en Gherkin.
 - Ejecución real contra la aplicación desplegada en Minikube.
+- Dos estilos de escritura combinables: por selector (sin LLM) o por descripción (con LLM).
 - Datos diferentes por escenario mediante perfiles lógicos.
-- Localización semántica de elementos con Skyvern.
-- Escape hatch determinístico mediante `id` o selector CSS.
 - Extracción de valores de la UI durante la ejecución.
 - Validaciones determinísticas en Python para reglas de negocio.
-- Evidencia HTML/JSON y screenshots por step.
+- Modo estricto: ningún step se delega al agente sin que lo sepas.
+- Evidencia HTML/JSON por feature, con screenshots y la ruta de resolución de cada step.
 - Un escenario fallido no detiene el resto de la suite.
 
 ## Arquitectura
@@ -27,25 +27,21 @@ El objetivo del proyecto no es delegar todo el escenario a un agente. El framewo
         v
     StepRouter
         |
-        +---- goto / fill / click ----------> SkyvernPage
+        +---- selector / id -----------------> Playwright (vía Skyvern)   sin LLM
         |
-        +---- extract ----------------------> Skyvern + LLM
-        |                                      |
-        |                                      v
-        |                               VariablesEscenario
-        |                                      |
-        |                                      v
-        |                               asserts en Python
+        +---- descripción --------------------> Skyvern + LLM             localiza el elemento
         |
-        +---- validate --------------------> Skyvern + LLM
+        +---- extract / validate semánticos --> Skyvern + LLM             interpreta la pantalla
         |
-        `---- act -------------------------> fallback agentic
-                                               |
-                                               v
-                                            Browser
-                                               |
-                                               v
-                                      Banking app / Minikube
+        +---- asserts de variables -----------> Python (Decimal)          sin LLM
+        |
+        `---- act (fallback) -----------------> agente Skyvern + LLM      bloqueable con ROUTER_STRICT
+                                                    |
+                                                    v
+                                                 Browser
+                                                    |
+                                                    v
+                                         Banking app / Minikube
 ```
 
 La explicación detallada está en [`docs/arquitectura.md`](docs/arquitectura.md).
@@ -81,20 +77,23 @@ BASE_URL=http://192.168.49.2:30081/
 
 SKYVERN_BASE_URL=http://localhost:8000
 SKYVERN_API_KEY=...
+HEADLESS=false
+SKYVERN_TIMEOUT=600
 
+# Router
+ROUTER_STRICT=true           # un step sin regla falla en lugar de ir al agente
+SELECTOR_TIMEOUT_MS=10000    # espera máxima de los steps por selector
+
+# Datos por perfil (ver data/profiles.yaml)
 SMOKE_LOGIN_PERSONAL_USERNAME=cliente
 SMOKE_LOGIN_PERSONAL_PASSWORD=...
-
-SMOKE_TRANSFER_USERNAME=cliente_transfer
-SMOKE_TRANSFER_PASSWORD=...
-SMOKE_TRANSFER_OTP=1245
 ```
 
-`.env.qa` debe permanecer fuera de Git. En CI/CD los valores sensibles deben provenir del secret store o de variables protegidas del pipeline.
+`.env.qa` debe permanecer fuera de Git. En CI/CD los valores sensibles deben provenir del secret store o de variables protegidas del pipeline. Para compartir el proyecto usa `git archive --format=zip HEAD -o proyecto.zip`, que solo incluye archivos versionados.
 
 ## Datos por escenario
 
-Los datos de entrada viven en `data/profiles.yaml`.
+Los datos de entrada viven en `data/profiles.yaml`. Los valores sensibles se referencian con `env://VARIABLE` y nunca se escriben en el YAML.
 
 ```yaml
 profiles:
@@ -102,113 +101,226 @@ profiles:
     username: env://SMOKE_LOGIN_PERSONAL_USERNAME
     password: env://SMOKE_LOGIN_PERSONAL_PASSWORD
 
-  smoke_transfer:
-    username: env://SMOKE_TRANSFER_USERNAME
-    password: env://SMOKE_TRANSFER_PASSWORD
-    otp: env://SMOKE_TRANSFER_OTP
+  smoke_transfer_personal:
+    username: env://SMOKE_TRANSFER_PERSONAL_USERNAME
+    password: env://SMOKE_TRANSFER_PERSONAL_PASSWORD
+    otp: env://SMOKE_TRANSFER_PERSONAL_OTP
     amount: 25000
 ```
 
 El escenario selecciona un perfil lógico:
 
 ```gherkin
-Dado que la prueba se ejecuta con el perfil "smoke_transfer"
+Dado que uso el perfil de prueba "smoke_transfer_personal"
 ```
 
-El `.feature` no necesita conocer nombres de variables de ambiente ni secretos reales.
+Luego cualquier step puede usar sus claves como variables: `ingreso la variable "username" en ...`. El `.feature` no conoce nombres de variables de ambiente ni secretos reales.
 
-## Vocabulario genérico del StepRouter
+## Cómo escribir test cases
 
-El router conoce **operaciones**, no conceptos de banca.
+### Principios
 
-| Gherkin | Ejecución |
+- **El router conoce operaciones, no conceptos de banca.** Reconoce la *estructura* de la frase (`hago click en ...`), no palabras sueltas como "menú" o "botón".
+- **`Dado` y `Cuando` comparten el mismo vocabulario de acciones.** La palabra clave expresa la intención para el lector (contexto vs. acción bajo prueba); no limita qué se puede hacer. `Entonces` tiene su propio vocabulario de validaciones.
+- **El `que` inicial es opcional:** `Dado que hago click en ...` y `Cuando hago click en ...` se resuelven igual.
+- **Cada step se resuelve de forma independiente.** Un mismo escenario puede mezclar estilos.
+
+### Tres estilos
+
+| Estilo | Cómo se escribe | LLM | Cuándo usarlo |
+|---|---|---|---|
+| **Por selector** | `hago click en el selector "#continueButton"` | No | Pantallas estables, datos críticos (saldos, montos), regresión |
+| **Semántico** | `hago click en "botón Continue"` | Sí, para localizar el elemento | Escritura rápida sin inspeccionar el DOM, pantallas que cambian seguido |
+| **Mixto** | Selectores en unos steps, descripciones en otros | Solo en los steps semánticos | La mayoría de los casos reales |
+
+### Formas de indicar un elemento por selector
+
+Las tres formas son equivalentes:
+
+```gherkin
+... el selector "#continueButton"                    # forma corta
+... el elemento con selector "#continueButton"       # forma larga
+... el elemento con id "continueButton"              # por id, con o sin "#"
+```
+
+- Dentro del selector usa **comillas simples**: `"[data-testid='sign-in']"`. Las comillas dobles cortan el step.
+- Si el selector coincide con varios elementos, se usa el primero. Prefiere selectores únicos.
+- Prioridad recomendada: `data-testid` > `id` > atributos accesibles (`[aria-label='...']`) > clases CSS. Evita XPath posicional.
+- El riesgo conocido de este estilo: si cambia el DOM, hay que editar los features que usan ese selector.
+
+### Vocabulario: contexto y navegación (`Dado` / `Cuando`)
+
+| Gherkin | Operación | Ruta |
+|---|---|---|
+| `que uso el perfil de prueba "smoke_login_personal"` | Activa el perfil de datos | determinístico |
+| `que abro la banca en línea` / `que abro la aplicación` / `navego a la aplicación` | `goto(BASE_URL)` | determinístico |
+| `que navego a la ruta "/transfers"` | `goto(BASE_URL + ruta)` (solo rutas relativas) | determinístico |
+| `regreso a la página anterior` | Botón "atrás" del navegador | determinístico |
+| `recargo la página` | Recarga la página | determinístico |
+
+El navegador lo abre el fixture de pytest antes del primer step, pero queda en blanco. **Algún step debe navegar**; lo habitual es ponerlo en `Antecedentes`.
+
+La navegación exige la **frase completa**. `Dado que abro el menú de transferencias` *no* navega: es una acción sobre la UI y se escribe como click.
+
+"Volver" usando la app (`hago click en "botón Volver"`) no es lo mismo que `regreso a la página anterior`, que usa el navegador.
+
+### Vocabulario: acciones (`Dado` / `Cuando`)
+
+| Gherkin | Por selector (sin LLM) | Semántico (con LLM) |
+|---|---|---|
+| Click | `hago click en el selector "#x"` | `hago click en "botón Continue"` |
+| Escribir una variable | `ingreso la variable "username" en el selector "#x"` | `ingreso la variable "username" en "campo Username"` |
+| Escribir un literal | `ingreso el valor "25000" en el selector "#x"` | `ingreso el valor "25000" en "campo Monto"` |
+
+`clic` y `click` se aceptan por igual. Las variables se buscan primero entre las generadas en el escenario y luego en el perfil activo.
+
+En el estilo semántico, lo que va entre comillas es una **descripción para el LLM**. Hazla descriptiva por sí misma: "botón Sign in" funciona mejor que "Sign in", y un texto como "btn1" no sirve. No pongas un selector CSS en una descripción: `hago click en "#menu"` se enviaría al LLM como texto.
+
+### Vocabulario: extracción de datos
+
+| Gherkin | Resolución |
 |---|---|
-| `Dado que la prueba se ejecuta con el perfil "X"` | `DatosPrueba.usar("X")` |
-| `Y navego a la aplicación` | `page.goto(BASE_URL)` |
-| `Cuando ingreso la variable "username" en "Username"` | `page.fill(prompt=..., value=...)` |
-| `Cuando ingreso la variable "username" en el elemento con id "username"` | `page.fill("#username", value=...)` |
-| `Cuando ingreso la variable "x" en el elemento con selector "..."` | `page.fill(selector, value=...)` |
-| `Cuando hago click en "Continue"` | `page.click(prompt="Continue")` |
-| `Cuando hago click en el elemento con id "continueButton"` | `page.click("#continueButton")` |
-| `Cuando hago click en el elemento con selector "..."` | `page.click(selector)` |
-| `Cuando guardo el valor de "..." como "saldo_inicial"` | `page.extract(...)` + `VariablesEscenario` |
-| `Entonces la variable "a" debe ser igual a la variable "b" menos la variable "monto"` | assert determinístico en Python |
-| otro `Entonces ...` | `page.validate(...)` + assert de pytest |
-| otro `Cuando ...` | `page.act(texto)` |
+| `guardo el texto del selector "#saldo-000002" como "saldo_inicial"` | Texto visible del elemento, sin LLM |
+| `guardo el valor de "saldo de la cuenta terminada en 000002" como "saldo_inicial"` | El LLM interpreta la pantalla y devuelve el valor |
 
-La prioridad es:
+Para montos y datos críticos se recomienda la forma por selector: es exacta e instantánea.
 
-```text
-determinístico explícito
-        ↓
-operación semántica conocida
-        ↓
-fallback agentic
+### Vocabulario: validaciones (`Entonces`)
+
+| Gherkin | Resolución |
+|---|---|
+| `el selector "#x" está visible` | Espera hasta `SELECTOR_TIMEOUT_MS` a que aparezca |
+| `el selector "#x" no está visible` | Espera a que desaparezca o no exista |
+| `el selector "#x" contiene el texto "Product Summary"` | Reintenta hasta que el texto coincida. Distingue mayúsculas; normaliza espacios y saltos de línea |
+| `la variable "a" debe ser igual a la variable "b"` | Assert en Python |
+| `la variable "a" debe ser igual a "1000000"` | Assert en Python (compara como número si ambos lo son) |
+| `la variable "final" debe ser igual a la variable "inicial" menos la variable "amount"` | Aritmética con `Decimal` en Python |
+| `la variable "final" debe ser igual a la variable "inicial" mas la variable "amount"` | Ídem |
+| `la variable "a" debe ser mayor que la variable "b"` / `menor que` | Ídem |
+| **Cualquier otro texto** | `page.validate()`: el LLM juzga si la condición se cumple |
+
+La IA nunca hace la aritmética: extrae los valores y Python calcula y compara.
+
+### Cuándo interviene el LLM
+
+| Situación | ¿LLM? |
+|---|---|
+| Step por selector o id (click, fill, texto, visible, contiene) | **No** |
+| Perfil, navegación, atrás, recargar, asserts de variables | **No** |
+| Step semántico (descripción entre comillas) | Sí, para localizar el elemento |
+| `guardo el valor de "..."` | Sí, para interpretar y extraer |
+| `Entonces` en texto libre | Sí, para juzgar la condición |
+| Step que no coincide con ninguna regla, con `ROUTER_STRICT=false` | Sí, como **agente** (`act`), con máxima autonomía |
+| Step que no coincide con ninguna regla, con `ROUTER_STRICT=true` | No: el step falla como `sin_regla` |
+
+**Garantía del estilo por selector.** Skyvern puede consultar al LLM aunque reciba un selector, pero solo si además recibe una descripción (`prompt`): en ese caso, si el selector falla, usa el LLM como respaldo. En los steps por selector el router envía **solo el selector**, así que si el selector no se encuentra, Skyvern reintenta y lanza el error original sin llamar al modelo. Esto está verificado en el código de Skyvern 1.0.48; al actualizar Skyvern hay que volver a comprobarlo.
+
+Un error de escritura en la frase (por ejemplo, `hago clic en selector "#x"`, sin "el") hace que el step no coincida con ninguna regla. Por eso se recomienda `ROUTER_STRICT=true` siempre en smoke y CI.
+
+Para confirmar que un escenario no usó el LLM, revisa la columna **Ruta** del informe: si todos sus steps son `deterministico`, no hubo llamadas al modelo.
+
+### Ejemplo: estilo por selector
+
+```gherkin
+# language: es
+@login
+Característica: Login de banca personal
+
+  Antecedentes:
+    Dado que abro la banca en línea
+
+  @smoke
+  Escenario: Login exitoso con selectores
+    Dado que uso el perfil de prueba "smoke_login_personal"
+    Cuando ingreso la variable "username" en el selector "#username"
+    Y hago click en el selector "#continueButton"
+    Entonces el selector "#password" está visible
+    Cuando ingreso la variable "password" en el selector "#password"
+    Y hago click en el selector "[data-testid='sign-in']"
+    Entonces el selector "#posicion-consolidada" está visible
+    Y el selector "#error-login" no está visible
 ```
+
+### Ejemplo: estilo semántico
+
+```gherkin
+  @smoke
+  Escenario: Login exitoso descrito en lenguaje natural
+    Dado que uso el perfil de prueba "smoke_login_personal"
+    Cuando ingreso la variable "username" en "campo Username"
+    Y hago click en "botón Continue"
+    Entonces hay un campo de texto password para escribir la contraseña
+    Cuando ingreso la variable "password" en "campo Password"
+    Y hago click en "botón Sign in"
+    Entonces se muestra la posicion consolidada con 2 Accounts y 1 CreditCards
+```
+
+### Ejemplo: estilo mixto con validación de negocio
+
+```gherkin
+  Escenario: Transferencia descuenta el saldo de la cuenta origen
+    Dado que uso el perfil de prueba "smoke_transfer_personal"
+    Y ingreso la variable "username" en el selector "#username"
+    Y hago click en el selector "#continueButton"
+    Y ingreso la variable "password" en el selector "#password"
+    Y hago click en el selector "[data-testid='sign-in']"
+    Y guardo el texto del selector "#saldo-000002" como "saldo_origen_inicial"
+    Cuando hago click en "menú Transferencias"
+    Y ingreso la variable "amount" en "campo Monto"
+    Y hago click en "botón Confirmar transferencia"
+    Entonces se muestra el comprobante de la transferencia
+    Cuando navego a la ruta "/accounts"
+    Y guardo el texto del selector "#saldo-000002" como "saldo_origen_final"
+    Entonces la variable "saldo_origen_final" debe ser igual a la variable "saldo_origen_inicial" menos la variable "amount"
+```
+
+El login y la lectura de saldos usan selectores (exactos y sin LLM); el flujo de transferencia usa descripciones; la regla de negocio la verifica Python.
+
+### Reglas de organización
+
+- **Nombres de escenario únicos dentro de cada `.feature`.** Si dos escenarios del mismo archivo se llaman igual, pytest-bdd conserva solo el último y el otro **deja de ejecutarse sin aviso**.
+- **Tags a nivel de `Característica`** para el área funcional (`@login`); se heredan a todos sus escenarios.
+- **Tags a nivel de `Escenario`** para el tipo de suite (`@smoke`, `@regression`).
+- **La `Característica` y su descripción** (Como / Quiero / Para) son documentación para el equipo: no se envían al LLM. Lo que sí afecta la ejecución son sus `Antecedentes` y sus tags.
 
 ## Variables generadas durante un escenario
 
-Los profiles representan **datos de entrada**. Los valores descubiertos durante el caso de uso viven en `VariablesEscenario`.
+Los perfiles representan **datos de entrada**. Los valores descubiertos durante el caso de uso viven en `VariablesEscenario`, se crean por escenario y se destruyen al terminarlo:
 
-Ejemplo:
-
-```gherkin
-Cuando guardo el valor de "saldo de la cuenta origen terminada en 000002" como "saldo_origen_inicial"
-Y guardo el valor de "saldo de la cuenta destino terminada en 000003" como "saldo_destino_inicial"
-
-# ... se realiza la transferencia ...
-
-Y guardo el valor de "saldo de la cuenta origen terminada en 000002" como "saldo_origen_final"
-Y guardo el valor de "saldo de la cuenta destino terminada en 000003" como "saldo_destino_final"
-
-Entonces la variable "saldo_origen_final" debe ser igual a la variable "saldo_origen_inicial" menos la variable "amount"
-Y la variable "saldo_destino_final" debe ser igual a la variable "saldo_destino_inicial" mas la variable "amount"
+```text
+DatosPrueba          → entrada conocida antes del escenario (amount = 25000)
+VariablesEscenario   → obtenido durante la ejecución (saldo_origen_inicial)
 ```
 
-Skyvern ayuda a **extraer** los valores. La aritmética la ejecuta Python con `Decimal`; no se delega al LLM.
-
-Las variables runtime se crean por escenario y se destruyen al terminarlo.
-
-## Ejecutar smoke
-
-Solo escenarios `@smoke`:
+## Ejecutar pruebas
 
 ```bash
-TEST_ENV=qa pytest -s -m smoke
+TEST_ENV=qa pytest -s -m smoke                # solo smoke
+TEST_ENV=qa pytest -s -m login                # todo lo de login
+TEST_ENV=qa pytest -s -m "login and smoke"    # combinaciones
 ```
 
-Combinaciones:
+Los tags usados en `-m` deben estar registrados en `pytest.ini`.
+
+Para exploración, sin modo estricto:
 
 ```bash
-TEST_ENV=qa pytest -s -m "smoke and authentication"
-TEST_ENV=qa pytest -s -m "smoke and transfers"
-TEST_ENV=qa pytest -s -m "smoke and not negative"
+TEST_ENV=qa ROUTER_STRICT=false pytest -s -m login
 ```
 
 ## Manejo de fallos
 
-Un step que no puede completarse mantiene el escenario como `FAILED`.
-
-Ejemplo conceptual:
+Un step que no puede completarse deja el escenario como `FAILED`, y pytest continúa con los demás (no se usa `-x` ni `--maxfail=1`):
 
 ```text
 Login usuario A                     PASSED
-Transferencia cuenta inexistente   FAILED
+Transferencia cuenta inexistente    FAILED
 Login usuario B                     PASSED
-Consulta tarjetas                  PASSED
 
-3 passed, 1 failed
+2 passed, 1 failed
 ```
 
-El error se registra con:
-
-- motivo legible para QA;
-- step que falló;
-- excepción técnica;
-- screenshot;
-- tiempo de ejecución.
-
-No se utiliza `-x` ni `--maxfail=1`, por lo que pytest continúa con los demás escenarios.
+El error se registra con el motivo legible para QA, el step que falló, la excepción técnica, el screenshot, el tiempo y la ruta de resolución. Un step rechazado por el modo estricto se reporta con su propio motivo (`sin_regla`).
 
 ## Evidencia
 
@@ -216,10 +328,16 @@ Cada corrida genera:
 
 ```text
 evidencia/<fecha_hora>/
-├── screenshots...
-├── resumen.json
-└── index.html
+├── index.html                  informe agrupado por .feature
+├── resumen.json                lo mismo en JSON, con conteos por feature y por ruta
+├── login/
+│   └── <escenario>/NN_<estado>_<paso>.png
+└── login-empresa/
+    └── <escenario>/NN_<estado>_<paso>.png
 ```
+
+- Cada escenario tiene su propia carpeta, aunque dos features tengan escenarios con el mismo nombre. En un `Esquema del escenario`, cada ejemplo tiene la suya.
+- La columna **Ruta** indica cómo se resolvió cada step (`deterministico`, `semantico`, `agentic`, `sin_regla`) y el encabezado resume cuántos hubo de cada tipo.
 
 Las capturas pueden contener datos sensibles. `evidencia/` y `.env.qa` deben estar ignorados por Git.
 
@@ -309,3 +427,5 @@ node mock-app/server.js
 ## Versionado
 
 Skyvern cambia con rapidez. Mantén la versión fijada en `requirements.txt` y valida `support/browser.py`, `support/step_router.py` y la integración con el modelo antes de actualizarla.
+
+Al actualizar Skyvern, verifica también que `click()` y `fill()` sigan sin consultar al LLM cuando reciben solo un selector: la garantía del estilo por selector depende de ese comportamiento.

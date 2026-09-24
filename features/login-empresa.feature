@@ -1,6 +1,6 @@
 # language: es
 @login-empresa
-Característica: Acceso a banca en línea con login de dos pasos
+Característica: Acceso a banca en línea empresarial con selección de operador
   Como cliente empresarial del banco
   Quiero autenticarme primero con mi usuario y luego con mi contraseña
   Para consultar mi posición consolidada
@@ -9,7 +9,7 @@ Característica: Acceso a banca en línea con login de dos pasos
     Dado que abro la banca en línea
 
   @regression
-  Escenario: Login exitoso muestra la posición consolidada
+  Escenario: Login empresarial exitoso muestra la posición consolidada del operador
     Dado que uso el perfil de prueba "smoke_login_empresa"
     Cuando ingreso la variable "username" en "campo Username"
     Y hago click en "botón Continue"
